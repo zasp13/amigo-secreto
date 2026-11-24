@@ -82,9 +82,37 @@ details summary{cursor:pointer;font-weight:800;color:var(--muted);font-size:.9re
 .overlay .card{max-width:420px;width:100%;text-align:center}
 textarea{width:100%;min-height:120px;padding:10px;border:1.5px solid var(--line);border-radius:10px;font:inherit;font-size:.9rem}
 .toplink{float:right}
+
+/* ===== Tema Navidad ===== */
+body{background:#0d3a2b;background-image:
+  radial-gradient(circle at 20% 10%,rgba(255,255,255,.08) 0,transparent 30%),
+  radial-gradient(circle at 85% 60%,rgba(200,55,45,.25) 0,transparent 40%),
+  linear-gradient(180deg,#0b3326 0%,#124a36 55%,#0d3a2b 100%);background-attachment:fixed}
+.wrap>h1,.wrap>.sub,.wrap>p,.wrap>.center h1,.wrap>.center .sub,.wrap>.hint{color:#fff}
+.wrap>.sub,.wrap>.center .sub{color:#d9eadf}
+h1 span{color:#f4c542!important}
+.wrap>h1,.wrap>.center h1{text-shadow:0 2px 12px rgba(0,0,0,.35)}
+.toplink{background:#fff!important;border-color:#fff!important}
+.card{border:0;border-top:5px solid var(--red);box-shadow:0 8px 26px rgba(0,0,0,.25)}
+.card:nth-of-type(even){border-top-color:var(--gold)}
+.step{background:linear-gradient(135deg,#c8372d,#e3a72f)}
+.btn{background:linear-gradient(135deg,#c8372d,#a12a22)}
+.garland{display:flex;justify-content:space-between;max-width:620px;margin:0 auto;padding:10px 16px 0;font-size:1.3rem;user-select:none}
+.garland span{animation:sway 3s ease-in-out infinite}
+.garland span:nth-child(odd){animation-delay:1.5s}
+@keyframes sway{50%{transform:translateY(4px) rotate(6deg)}}
+.bgsnow{position:fixed;inset:0;pointer-events:none;overflow:hidden;z-index:0}
+.bgsnow i{position:absolute;top:-10px;color:#fff;font-style:normal;animation:flake linear infinite}
+@keyframes flake{to{transform:translateY(105vh) translateX(30px)}}
+.wrap,.overlay{position:relative;z-index:1}
+.overlay{position:fixed}
+.trees{position:fixed;left:0;right:0;bottom:-6px;font-size:2.6rem;display:flex;justify-content:space-between;padding:0 6px;opacity:.35;pointer-events:none;z-index:0}
 </style>
 </head>
 <body>
+<div class="bgsnow" id="bgsnow"></div>
+<div class="trees">🎄<span>🎄</span><span>🎄</span>🎄</div>
+<div class="garland"><span>🎄</span><span>❄️</span><span>🔔</span><span>⭐</span><span>🎅</span><span>⭐</span><span>🔔</span><span>❄️</span><span>🎄</span></div>
 <div class="snow" id="snow"></div>
 <div class="wrap" id="app"></div>
 <div class="overlay hidden" id="overlay"><div class="card" id="ovCard"></div></div>
@@ -281,7 +309,7 @@ async function adminEvent(id){
     if(!repaired){repaired=true;await repair()}
     const ae=document.activeElement;
     if(ae&&/SELECT|INPUT/.test(ae.tagName))return;
-    if(($("#exA")&&$("#exA").value)||($("#exB")&&$("#exB").value))return;
+    if(["#exA","#exB","#fxG","#fxR"].some(q=>$(q)&&$(q).value))return;
     render();
   }
   async function repair(){
@@ -331,6 +359,12 @@ async function adminEvent(id){
       <div class="row"><div><select id="exA">${opts}</select></div><div><select id="exB">${opts}</select></div>
       <button class="btn-ghost" style="flex:0 0 auto" id="exAdd">Agregar</button></div>
       <div class="chips">${ev.excl.map(([a,b],i)=>ev.regs[a]&&ev.regs[b]?`<span class="chip">${esc(nm(a))} ✕ ${esc(nm(b))}<button class="x" data-dx="${i}">✕</button></span>`:"").join("")}</div>
+      <hr style="border:0;border-top:1px solid var(--line);margin:16px 0">
+      <p class="hint" style="margin:0 0 10px">🎯 <b>Elegir quién le regala a quién</b> (si quieres). El resto se sortea al azar.</p>
+      <div class="row"><div><label for="fxG">Quién regala</label><select id="fxG">${opts}</select></div><div><label for="fxR">Le regala a</label><select id="fxR">${opts}</select></div>
+      <button class="btn-ghost" style="flex:0 0 auto" id="fxAdd">Asignar</button></div>
+      <div id="fxMsg"></div>
+      <div class="chips">${(ev.fixed||[]).map(([a,b],i)=>ev.regs[a]&&ev.regs[b]?`<span class="chip">${esc(nm(a))} 🎁→ ${esc(nm(b))}<button class="x" data-fx="${i}">✕</button></span>`:"").join("")}</div>
     </div>`}
     <div class="card">
       <h2><span class="step">${drawn?4:5}</span> Sorteo</h2>
@@ -352,10 +386,20 @@ async function adminEvent(id){
     const cpI=$("#cpInv");if(cpI)cpI.onclick=()=>copy(inviteText(ev),cpI);
     const cpD=$("#cpDrawn");if(cpD)cpD.onclick=()=>copy(drawnText(ev),cpD);
     app.querySelectorAll("[data-del]").forEach(b=>b.onclick=()=>confirmBox(`¿Quitar a <b>${esc(nm(b.dataset.del))}</b> del sorteo?`,"Quitar",async()=>{
-      const pid=b.dataset.del;ev.dels.push(pid);delete ev.regs[pid];ev.excl=ev.excl.filter(([a,c])=>a!==pid&&c!==pid);saveAdminEvent(ev);render();await publish(id,{t:"del",id:pid,ts:Date.now()})}));
+      const pid=b.dataset.del;ev.dels.push(pid);delete ev.regs[pid];ev.excl=ev.excl.filter(([a,c])=>a!==pid&&c!==pid);ev.fixed=(ev.fixed||[]).filter(([a,c])=>a!==pid&&c!==pid);saveAdminEvent(ev);render();await publish(id,{t:"del",id:pid,ts:Date.now()})}));
     const exAdd=$("#exAdd");if(exAdd)exAdd.onclick=()=>{const a=$("#exA").value,b=$("#exB").value;if(!a||!b||a===b)return;
       if(!ev.excl.some(([x,y])=>(x===a&&y===b)||(x===b&&y===a)))ev.excl.push([a,b]);saveAdminEvent(ev);render()};
     app.querySelectorAll("[data-dx]").forEach(b=>b.onclick=()=>{ev.excl.splice(+b.dataset.dx,1);saveAdminEvent(ev);render()});
+    const fxAdd=$("#fxAdd");if(fxAdd)fxAdd.onclick=()=>{
+      const g=$("#fxG").value,r=$("#fxR").value;ev.fixed=ev.fixed||[];
+      const err=t=>{$("#fxMsg").innerHTML='<div class="msg err">'+t+'</div>'};
+      if(!g||!r)return err("Elige a las dos personas.");
+      if(g===r)return err("Nadie puede regalarse a sí mismo.");
+      if(ev.fixed.some(([a])=>a===g))return err(esc(nm(g))+" ya tiene a quién regalar. Quita esa asignación primero.");
+      if(ev.fixed.some(([,b])=>b===r))return err("Alguien ya le regala a "+esc(nm(r))+". Quita esa asignación primero.");
+      if(ev.excl.some(([x,y])=>(x===g&&y===r)||(x===r&&y===g)))return err("Hay una regla que dice que no pueden tocarse.");
+      ev.fixed.push([g,r]);saveAdminEvent(ev);render()};
+    app.querySelectorAll("[data-fx]").forEach(b=>b.onclick=()=>{ev.fixed.splice(+b.dataset.fx,1);saveAdminEvent(ev);render()});
     const cb=$("#closeBtn");if(cb)cb.onclick=()=>confirmBox(`¿Cerrar las inscripciones con <b>${R.length} personas</b>? Nadie más podrá inscribirse.`,"Cerrar",async()=>{ev.closed=true;saveAdminEvent(ev);render();await publish(id,{t:"close",ts:Date.now()})});
     const ro=$("#reopen");if(ro)ro.onclick=async()=>{ev.closed=false;saveAdminEvent(ev);render();await publish(id,{t:"open",ts:Date.now()})};
     const db=$("#drawBtn");if(db)db.onclick=()=>confirmBox(`¿Hacer el sorteo entre <b>${R.length} personas</b>?`,"Sortear",doDraw);
@@ -368,12 +412,13 @@ async function adminEvent(id){
   async function doDraw(){
     const R=regs(),n=R.length;
     const banned=new Set();ev.excl.forEach(([a,b])=>{banned.add(a+"|"+b);banned.add(b+"|"+a)});
-    const okp=(g,r)=>g!==r&&!banned.has(R[g].id+"|"+R[r].id);
+    const fx={},fxTaken=new Set();(ev.fixed||[]).forEach(([a,b])=>{if(ev.regs[a]&&ev.regs[b]){fx[a]=b;fxTaken.add(b)}});
+    const okp=(g,r)=>{const gi=R[g].id,ri=R[r].id;if(g===r)return false;if(fx[gi])return fx[gi]===ri;if(fxTaken.has(ri))return false;return !banned.has(gi+"|"+ri)};
     const order=[...Array(n).keys()].sort(()=>Math.random()-.5),used=new Array(n).fill(false),res=new Array(n);let steps=0;
     function bt(k){if(++steps>200000)return false;if(k===n)return true;const g=order[k];
       const c=[...Array(n).keys()].filter(r=>!used[r]&&okp(g,r)).sort(()=>Math.random()-.5);
       for(const r of c){used[r]=true;res[g]=r;if(bt(k+1))return true;used[r]=false}return false}
-    if(!bt(0)){msg='<div class="msg err">Con esas reglas no se puede armar un sorteo. Quita alguna regla.</div>';render();return}
+    if(!bt(0)){msg='<div class="msg err">Con esas reglas y asignaciones no se puede armar un sorteo. Quita alguna e intenta de nuevo.</div>';render();return}
     render('<div class="msg info dots">Sorteando y enviando resultados secretos</div>');
     const map={},enc={};
     for(let i=0;i<n;i++){map[R[i].id]=R[res[i]].id;enc[R[i].id]=await encFor(R[i].pk,JSON.stringify({r:R[res[i]].name}))}
@@ -393,7 +438,7 @@ async function participantView(id){
   const KEY="as-p-"+id;
   let me=store(KEY);
   let st=null,reRegistered=false;
-  app.innerHTML='<p class="center sub dots" style="margin-top:30vh">Cargando</p>';
+  app.innerHTML='<p class="center dots" style="margin-top:30vh;color:#fff">Cargando</p>';
   async function sync(){
     try{st=reduce(await readFeed(id))}catch(e){if(!st){app.innerHTML='<div class="card center" style="margin-top:20vh"><p>No hay conexión. Revisa tu internet y recarga.</p></div>'}return}
     if(me&&st.dels.has(me.id)){store(KEY,null);me=null}
@@ -473,7 +518,7 @@ async function participantView(id){
       <div class="tombola"><div class="lights">${"<i></i>".repeat(8)}</div>
         <div class="reel"><div class="window"></div><div class="strip" id="strip"></div></div>
       </div>
-      <button class="btn btn-big lever" id="spin">🎰 ¡Girar la tómbola!</button>
+      <button class="btn btn-big lever" id="spin">🎰 Girar</button>
       <div id="result" class="hidden"><p style="margin:14px 0 0;color:var(--muted);font-weight:800">Tu amigo secreto es…</p>
         <div class="big-name">${esc(winner)}</div><p class="hint">🤫 ¡Shhh! No le cuentes a nadie.</p>
         <button class="btn-ghost btn-sm" id="again">Girar otra vez</button></div>
@@ -498,6 +543,9 @@ async function participantView(id){
   pollTimer=setInterval(sync,15000);
 }
 
+(function(){const b=$("#bgsnow");for(let i=0;i<36;i++){const e=document.createElement("i");e.textContent=i%3?"•":"❄";
+  e.style.left=Math.random()*100+"vw";e.style.fontSize=(i%3?6+Math.random()*6:10+Math.random()*8)+"px";e.style.opacity=.35+Math.random()*.5;
+  e.style.animationDuration=(8+Math.random()*10)+"s";e.style.animationDelay=(-Math.random()*18)+"s";b.appendChild(e)}})();
 route();
 })();
 </script>
