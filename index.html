@@ -194,7 +194,7 @@ function route(){
 window.addEventListener("hashchange",route);
 
 /* ===================== ADMINISTRADOR ===================== */
-function isAdmin(){return store("as-admin-ok")===PASS_HASH}
+function isAdmin(){return true}
 function adminLogin(nextId){
   app.innerHTML=`
   <h1 class="serif">Amigo <span>Secreto</span> 🎁</h1>
@@ -217,7 +217,6 @@ function saveAdminEvent(e){const all=adminEvents();all[e.id]=e;store("as-admin-e
 function adminHome(){
   const evs=Object.values(adminEvents()).sort((a,b)=>b.created-a.created);
   app.innerHTML=`
-  <button class="btn-ghost btn-sm toplink" id="logout">Salir</button>
   <h1 class="serif">Amigo <span>Secreto</span> 🎁</h1>
   <p class="sub">Crea el evento, comparte el link de inscripción y haz el sorteo cuando estén todos.</p>
   <div class="card">
@@ -236,7 +235,6 @@ function adminHome(){
     <li><div class="avatar" style="background:${color(i)}">🎁</div><div class="grow"><div class="name">${esc(e.name)}</div>
     <div class="hint" style="margin:0">${e.draw?'<span class="badge">Sorteo hecho</span>':'<span class="badge wait">Inscripciones abiertas</span>'}</div></div>
     <a class="btn-ghost btn-sm" style="border-radius:10px;text-decoration:none;color:var(--ink)" href="#admin-${e.id}">Abrir</a></li>`).join("")}</ul></div>`:""}`;
-  $("#logout").onclick=()=>{store("as-admin-ok","");route()};
   $("#nf").onsubmit=async e=>{
     e.preventDefault();
     const btn=e.target.querySelector("button");btn.disabled=true;btn.textContent="Creando…";
@@ -264,12 +262,7 @@ function drawnText(ev){
 async function adminEvent(id){
   let ev=adminEvents()[id];
   if(!ev){
-    // evento creado en otro aparato: se reconstruye desde el canal
-    app.innerHTML='<p class="center sub dots">Cargando evento</p>';
-    try{const st=reduce(await readFeed(id));
-      if(!st.ev){app.innerHTML='<div class="card center"><p>No encontré este evento en este aparato.</p><a href="#">Volver</a></div>';return}
-      ev={id,name:st.ev.name,budget:st.ev.budget,date:st.ev.date,created:Date.now(),regs:{},dels:[],excl:[],draw:null};saveAdminEvent(ev);
-    }catch(e){app.innerHTML='<div class="card center"><p>Sin conexión.</p></div>';return}
+    app.innerHTML='<div class="card center" style="margin-top:20vh"><div style="font-size:2.2rem">🔒</div><p><b>Este evento solo se puede administrar desde el celular donde se creó.</b></p><a href="#">Volver</a></div>';return;
   }
   let st=null,repaired=false,msg="";
   async function sync(){
