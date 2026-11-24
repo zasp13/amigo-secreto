@@ -93,7 +93,7 @@ textarea{width:100%;min-height:120px;padding:10px;border:1.5px solid var(--line)
 (function(){
 "use strict";
 /* ===================== Configuración ===================== */
-const PASS_HASH="753e6224edea9e470cca0f4caecd91ca4553a3dd3fee03e2ecabd1a98c58d61b"; // sha256("amigo-secreto|<clave>")
+const PASS_HASH="831f587e4c52c337b68c0dac93a42cccc78d6f1bccb11775fbaf9ffc7bf4e907"; // sha256("amigo-secreto|"+clave en minúsculas)
 const RELAY="https://ntfy.sh/";
 const COLORS=["#c8372d","#1f6f4f","#e3a72f","#3d5a9e","#9a4b8a","#2f8a8a","#b85c2a","#5c6b2e"];
 const $=s=>document.querySelector(s);
@@ -201,14 +201,14 @@ function adminLogin(nextId){
   <p class="sub">Acceso para quien organiza el sorteo.</p>
   <div class="card">
     <h2>🔒 Clave de organizador</h2>
-    <form id="lf"><input id="pw" type="password" placeholder="Escribe la clave" autocomplete="current-password">
+    <form id="lf"><input id="pw" type="text" placeholder="Escribe la clave" autocomplete="off" autocapitalize="none" autocorrect="off" spellcheck="false">
     <button class="btn btn-big" style="margin-top:10px">Entrar</button></form>
     <div id="lm"></div>
   </div>
   <p class="hint center">¿Te invitaron a un sorteo? Abre el link que te mandaron por WhatsApp.</p>`;
   $("#lf").onsubmit=async e=>{
     e.preventDefault();
-    if(await sha256("amigo-secreto|"+$("#pw").value)===PASS_HASH){store("as-admin-ok",PASS_HASH);nextId?adminEvent(nextId):adminHome()}
+    if(await sha256("amigo-secreto|"+$("#pw").value.trim().replace(/\s+/g,"").toLowerCase())===PASS_HASH){store("as-admin-ok",PASS_HASH);nextId?adminEvent(nextId):adminHome()}
     else $("#lm").innerHTML='<div class="msg err">Clave incorrecta.</div>';
   };
 }
