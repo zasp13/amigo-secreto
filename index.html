@@ -326,7 +326,7 @@ function saveAdminEvent(e){const all=adminEvents();all[e.id]=e;store("as-admin-e
 function adminHome(){
   const evs=Object.values(adminEvents()).sort((a,b)=>b.created-a.created);
   app.innerHTML=`
-  ${evs.length?`<button class="iconbtn corner-r" id="listBtn" aria-label="Mis eventos" title="Mis eventos"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M8 6h13M8 12h13M8 18h13"/><circle cx="3.5" cy="6" r="1.2" fill="currentColor"/><circle cx="3.5" cy="12" r="1.2" fill="currentColor"/><circle cx="3.5" cy="18" r="1.2" fill="currentColor"/></svg></button>`:""}
+  <button class="iconbtn corner-r" id="listBtn" aria-label="Mis eventos" title="Mis eventos"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M8 6h13M8 12h13M8 18h13"/><circle cx="3.5" cy="6" r="1.2" fill="currentColor"/><circle cx="3.5" cy="12" r="1.2" fill="currentColor"/><circle cx="3.5" cy="18" r="1.2" fill="currentColor"/></svg></button>
   <div class="center"><div style="font-size:2.8rem">🎁</div><h1 class="serif">Amigo <span>Secreto</span></h1>
   <p class="sub">Panel del organizador</p></div>
   <div class="photo-space" id="homeSpace" style="height:${evs.length?"36vh":"44vh"}"></div>
@@ -343,10 +343,10 @@ function adminHome(){
     </form>
     <div id="nm"></div>
   </div>
-  ${evs.length?`<div class="card hidden reg-sheet" id="listCard" style="margin-top:16px"><h2>📋 Mis eventos <button type="button" class="x" id="closeList" style="margin-left:auto" aria-label="Cerrar">✕</button></h2><ul class="people">${evs.map((e,i)=>`
+  ${`<div class="card hidden reg-sheet" id="listCard" style="margin-top:16px"><h2>📋 Mis eventos <button type="button" class="x" id="closeList" style="margin-left:auto" aria-label="Cerrar">✕</button></h2><ul class="people">${evs.map((e,i)=>`
     <li><div class="avatar" style="background:${color(i)}">🎁</div><div class="grow"><div class="name">${esc(e.name)}</div>
     <div class="hint" style="margin:0">${e.draw?'<span class="badge">Sorteo hecho</span>':'<span class="badge wait">Inscripciones abiertas</span>'}</div></div>
-    <a class="btn-ghost btn-sm" style="border-radius:10px;text-decoration:none;color:var(--ink)" href="#admin-${e.id}">Abrir</a></li>`).join("")}</ul></div>`:""}`;
+    <a class="btn-ghost btn-sm" style="border-radius:10px;text-decoration:none;color:var(--ink)" href="#admin-${e.id}">Abrir</a></li>`).join("")}</ul>${evs.length?"":`<p class="hint" style="margin:0">Este celular o computador no tiene eventos todavía.<br>Los eventos se guardan en el aparato donde los creaste: ábrelos desde ahí.</p>`}</div>`}`;
   const lb=$("#listBtn");if(lb)lb.onclick=()=>requirePin(()=>{$("#openNew").classList.add("hidden");$("#homeSpace").classList.add("hidden");$("#listCard").classList.remove("hidden")});
   const cl=$("#closeList");if(cl)cl.onclick=()=>{$("#listCard").classList.add("hidden");$("#openNew").classList.remove("hidden");$("#homeSpace").classList.remove("hidden")};
   if(location.hash==="#eventos"&&lb)lb.click();
