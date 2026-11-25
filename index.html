@@ -350,10 +350,11 @@ function adminHome(){
   const lb=$("#listBtn");if(lb)lb.onclick=()=>requirePin(()=>{$("#openNew").classList.add("hidden");$("#homeSpace").classList.add("hidden");$("#listCard").classList.remove("hidden")});
   const cl=$("#closeList");if(cl)cl.onclick=()=>{$("#listCard").classList.add("hidden");$("#openNew").classList.remove("hidden");$("#homeSpace").classList.remove("hidden")};
   if(location.hash==="#eventos"&&lb)lb.click();
-  $("#newBtn").onclick=()=>{$("#openNew").classList.add("hidden");$("#homeSpace").classList.add("hidden");$("#newCard").classList.remove("hidden");$("#evName").focus()};
+  $("#newBtn").onclick=()=>requirePin(()=>{$("#openNew").classList.add("hidden");$("#homeSpace").classList.add("hidden");$("#newCard").classList.remove("hidden");$("#evName").focus()});
   $("#closeNew").onclick=()=>{$("#newCard").classList.add("hidden");$("#openNew").classList.remove("hidden");$("#homeSpace").classList.remove("hidden")};
   $("#nf").onsubmit=async e=>{
     e.preventDefault();
+    if(!unlocked())return requirePin(()=>{});
     const btn=e.target.querySelector("button");btn.disabled=true;btn.textContent="Creando…";
     const ak=await newKeys();
     const ev={id:rid(14),name:$("#evName").value.trim(),budget:$("#evBudget").value.trim(),date:$("#evDate").value,created:Date.now(),regs:{},dels:[],excl:[],draw:null,closed:false,ak:ak.pub,ajwk:ak.jwk};
