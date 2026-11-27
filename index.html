@@ -157,6 +157,7 @@ a.btn{font:800 1.05rem "Nunito Sans";border-radius:12px;display:flex;align-items
 .pin-txt{background:none;color:#fff;font:500 1rem -apple-system,BlinkMacSystemFont,"Nunito Sans",sans-serif;padding:8px}
 .rules summary{list-style:none;cursor:pointer;color:var(--ink)}.rules summary h2{color:var(--ink)}.rules summary::-webkit-details-marker{display:none}
 .rules .chev{margin-left:auto;font-size:1rem;color:var(--muted);transition:transform .2s}.rules[open] .chev{transform:rotate(180deg)}
+.strip div.masked{color:#c9a227;letter-spacing:.12em;font-size:1.5rem}
 </style>
 </head>
 <body>
@@ -891,11 +892,14 @@ async function participantView(id){
     const loops=Math.max(8,Math.ceil(40/names.length));
     for(let l=0;l<loops;l++)pool.push(...shuffled);
     const targetIdx=pool.length+shuffled.indexOf(winner);pool.push(...shuffled,...shuffled);
-    strip.innerHTML=pool.map(n=>`<div><span class="av" style="background:${color(names.indexOf(n))}">${initial(n)}</span>${esc(n)}</div>`).join("");
+    const realHTML=pool.map(n=>`<div><span class="av" style="background:${color(names.indexOf(n))}">${initial(n)}</span>${esc(n)}</div>`).join("");
+    /* antes de girar no se ve ningún nombre */
+    const hidden='<div class="masked">✱✱✱✱✱✱✱✱✱</div>'.repeat(3);
+    strip.innerHTML=seen?realHTML:hidden;
     const setY=(i,anim)=>{strip.style.transition=anim?"transform 5.2s cubic-bezier(.12,.75,.15,1)":"none";strip.style.transform=`translateY(${-(i*H)+H}px)`};
     setY(1,false);
     function spin(){
-      $("#spin").disabled=true;$("#result").classList.add("hidden");setY(1,false);void strip.offsetHeight;
+      $("#spin").disabled=true;$("#result").classList.add("hidden");strip.innerHTML=realHTML;setY(1,false);void strip.offsetHeight;
       setY(targetIdx,true);
       setTimeout(()=>{$("#spin").classList.add("hidden");$("#result").classList.remove("hidden");snow(45);me.seen=true;me.seenName=winner;store(KEY,me)},5400);
     }
