@@ -155,6 +155,8 @@ a.btn{font:800 1.05rem "Nunito Sans";border-radius:12px;display:flex;align-items
 .pin-keys small{font:600 .62rem -apple-system,BlinkMacSystemFont,"Helvetica Neue",sans-serif;letter-spacing:.18em;margin-top:2px;min-height:.8em}
 .pin-foot{display:flex;justify-content:space-between;margin-top:22px;padding:0 10px}
 .pin-txt{background:none;color:#fff;font:500 1rem -apple-system,BlinkMacSystemFont,"Nunito Sans",sans-serif;padding:8px}
+.rules summary{list-style:none;cursor:pointer;color:var(--ink)}.rules summary h2{color:var(--ink)}.rules summary::-webkit-details-marker{display:none}
+.rules .chev{margin-left:auto;font-size:1rem;color:var(--muted);transition:transform .2s}.rules[open] .chev{transform:rotate(180deg)}
 </style>
 </head>
 <body>
@@ -346,10 +348,17 @@ function mergeBasket(st,b){
 }
 const pCache={};
 /* lee el evento: canal rápido siempre; Pantry al abrir y luego cada cierto tiempo */
-async function loadState(evId,every){
-  let msgs=null;try{msgs=await readFeed(evId)}catch(e){}
-  const c=pCache[evId]||(pCache[evId]={t:0,b:null});
-  if(!c.t||Date.now()-c.t>(every||60000)){c.t=Date.now();const b=await Promise.race([pCall("GET","e-"+evId),sleep(7000).then(()=>null)]);if(b)c.b=b}
+async function loadState(evId,every,onLate){
+  let msgs=null;try{msgs=await Promise.race([readFeed(evId),sleep(6000).then(()=>{throw new Error("lento")})])}catch(e){}
+  const c=pCache[evId]||(pCache[evId]={t:0,b:store("as-pc-"+evId)});
+  if(!c.t||Date.now()-c.t>(every||60000)){
+    c.t=Date.now();
+    const fetchB=pCall("GET","e-"+evId).then(b=>{if(b){c.b=b;if(!b.__missing)store("as-pc-"+evId,b)}return b});
+    const haveData=(msgs&&msgs.some(m=>m.t==="ev"))||(c.b&&!c.b.__missing);
+    /* si ya hay algo que mostrar, no se espera a Pantry: se muestra al tiro y se actualiza cuando llegue */
+    if(haveData&&onLate)fetchB.then(b=>{if(b)onLate()});
+    else await Promise.race([fetchB,sleep(8000)]);
+  }
   if(!msgs&&!c.b)throw new Error("sin conexión");
   const st=mergeBasket(reduce(msgs||[]),c.b);
   st.inPantry=!!(c.b&&!c.b.__missing);
@@ -436,7 +445,7 @@ function requirePin(ok,cancel){
     if(code.length===4){
       const h=await sha256("amigo-secreto-pin|"+code);
       if(h===PIN_HASH){try{sessionStorage.setItem("as-unlock",PIN_HASH);sessionStorage.setItem("as-pin",code)}catch(e){}
-        pad.querySelector(".pin-title").textContent="Abriendo…";await Promise.race([pullVault(),sleep(9000)]);pushVaultSoon();setTimeout(()=>{pad.remove();ok()},120)}
+        pad.remove();ok();pushVaultSoon()}
       else{const box=pad.querySelector(".pin-dots");box.classList.add("shake");setTimeout(()=>{box.classList.remove("shake");code="";paint()},450)}
     }
   }
@@ -586,9 +595,9 @@ async function adminEvent(id){
     await pullVault();ev=adminEvents()[id];
     if(!ev){app.innerHTML='<div class="card center" style="margin-top:20vh"><p><b>No encontré este evento.</b></p><p class="hint">Puede que haya sido eliminado.</p><a href="#eventos">Volver a mis eventos</a></div>';return}
   }
-  let st=null,repaired=false,msg="";
+  let st=null,repaired=false,msg="",rulesOpen=false;
   async function sync(){
-    try{st=await loadState(id,45000)}catch(e){st=null;render('<div class="msg err">Sin conexión. Reintentando…</div>');return}
+    try{st=await loadState(id,45000,()=>sync())}catch(e){st=null;render('<div class="msg err">Sin conexión. Reintentando…</div>');return}
     ev=adminEvents()[id];
     // juntar inscripciones nuevas en la copia maestra de este aparato
     for(const r of regList(st)){
@@ -652,8 +661,9 @@ async function adminEvent(id){
         :'<p class="hint dots" style="margin:0">Esperando inscripciones</p>'}
       <p class="hint">${ev.closed?"Inscripciones cerradas.":"La lista se actualiza sola."}</p>
     </div>
-    ${drawn?"":`<div class="card">
-      <h2><span class="step">4</span> Reglas <span class="hint" style="margin:0">(opcional)</span></h2>
+    ${drawn?"":`<details class="card rules" id="rulesBox" ${rulesOpen?"open":""}>
+      <summary><h2 style="margin:0"><span class="step">4</span> Reglas <span class="hint" style="margin:0">(opcional${(ev.excl.length+(ev.fixed||[]).length)?" · "+(ev.excl.length+(ev.fixed||[]).length)+" activas":""})</span><span class="chev">▾</span></h2></summary>
+      <div style="margin-top:12px"></div>
       <p class="hint" style="margin:0 0 10px">Parejas que <b>no</b> pueden tocarse entre sí.</p>
       <div class="row"><div><select id="exA">${opts}</select></div><div><select id="exB">${opts}</select></div>
       <button class="btn-ghost" style="flex:0 0 auto" id="exAdd">Agregar</button></div>
@@ -664,7 +674,7 @@ async function adminEvent(id){
       <button class="btn-ghost" style="flex:0 0 auto" id="fxAdd">Asignar</button></div>
       <div id="fxMsg"></div>
       <div class="chips">${(ev.fixed||[]).map(([a,b],i)=>ev.regs[a]&&ev.regs[b]?`<span class="chip">${esc(nm(a))} 🎁→ ${esc(nm(b))}<button class="x" data-fx="${i}">✕</button></span>`:"").join("")}</div>
-    </div>`}
+    </details>`}
     <div class="card">
       <h2><span class="step">${drawn?4:5}</span> Sorteo</h2>
       ${drawn?`<div class="msg ok" style="margin-top:0">¡Sorteo hecho! Ahora avísale al grupo para que cada uno gire su tómbola.</div>
@@ -683,6 +693,7 @@ async function adminEvent(id){
         <button class="btn btn-big" id="closeBtn" ${R.length<3?"disabled":""}>🔒 Cerrar inscripciones</button>`}
     </div>
     `;
+    const rb2=$("#rulesBox");if(rb2)rb2.ontoggle=()=>{rulesOpen=rb2.open};
     const cpI=$("#cpInv");if(cpI)cpI.onclick=()=>copy(inviteText(ev),cpI);
     const cpD=$("#cpDrawn");if(cpD)cpD.onclick=()=>copy(drawnText(ev),cpD);
     app.querySelectorAll("[data-del]").forEach(b=>b.onclick=()=>confirmBox(`¿Quitar a <b>${esc(nm(b.dataset.del))}</b> del sorteo?`,"Quitar",async()=>{
@@ -741,10 +752,11 @@ async function adminEvent(id){
 async function participantView(id){
   const KEY="as-p-"+id;
   let me=store(KEY);
-  let st=null,reRegistered=false;
+  let st=null,reRegistered=false,onTombola=false;
   app.innerHTML='<p class="center dots" style="margin-top:30vh;color:#fff">Cargando</p>';
   async function sync(){
-    try{st=await loadState(id,60000)}catch(e){if(!st){app.innerHTML='<div class="card center" style="margin-top:20vh"><p>No hay conexión. Revisa tu internet y recarga.</p></div>'}return}
+    if(onTombola||$("#recF"))return;
+    try{st=await loadState(id,60000,()=>sync())}catch(e){if(!st){app.innerHTML='<div class="card center" style="margin-top:20vh"><p>No hay conexión. Revisa tu internet y recarga.</p></div>'}return}
     if(me&&st.dels.has(me.id)){store(KEY,null);me=null}
     // si mi inscripción ya no aparece (el canal guarda ~12 h) la vuelvo a mandar
     if(me&&!st.regs[me.id]&&!st.draw&&!reRegistered){reRegistered=true;await publish(id,{t:"reg",id:me.id,name:me.name,pk:me.pub,ph:me.ph,pak:me.pak,ts:me.ts});st.regs[me.id]={id:me.id,name:me.name,pk:me.pub,ts:me.ts}}
@@ -832,7 +844,7 @@ async function participantView(id){
     clearInterval(pollTimer);
     const others=R.filter(r=>r.id!==me.id).map(r=>r.name);
     if(!others.includes(res))others.push(res);
-    tombola(header(),res,others,!!me.seen);
+    tombola(header(),res,others,!!(me.seen&&me.seenName===res));
   }
   function recoverForm(){
     const R=regList(st);
@@ -859,6 +871,7 @@ async function participantView(id){
     };
   }
   function tombola(head,winner,names,seen){
+    onTombola=true;clearInterval(pollTimer);
     app.innerHTML=head+`
     <div class="card center">
       <p style="margin:0;font-weight:800">${esc(me.name)}, ¡el sorteo está listo! 🎉</p>
@@ -868,8 +881,10 @@ async function participantView(id){
       </div>
       <button class="btn btn-big lever" id="spin">🎰 Girar</button>
       <div id="result" class="hidden"><p style="margin:14px 0 0;color:var(--muted);font-weight:800">Tu amigo secreto es…</p>
-        <div class="big-name">${esc(winner)}</div><p class="hint">🤫 ¡Shhh! No le cuentes a nadie.</p>
-        <button class="btn-ghost btn-sm" id="again">Girar otra vez</button></div>
+        <div class="big-name" id="winName">${esc(winner)}</div>
+        <button class="btn-ghost" id="copyWin" style="margin-top:2px">📋 Copiar nombre</button>
+        <p class="hint" style="margin-top:12px">🤫 ¡Shhh! No le cuentes a nadie.<br>Puedes volver a este link cuando quieras para verlo de nuevo.</p>
+        <button class="btn-ghost btn-sm" id="again" style="margin-top:6px">Girar otra vez</button></div>
     </div>`;
     const strip=$("#strip"),H=70;
     const pool=[];const shuffled=names.slice().sort(()=>Math.random()-.5);
@@ -882,8 +897,10 @@ async function participantView(id){
     function spin(){
       $("#spin").disabled=true;$("#result").classList.add("hidden");setY(1,false);void strip.offsetHeight;
       setY(targetIdx,true);
-      setTimeout(()=>{$("#spin").classList.add("hidden");$("#result").classList.remove("hidden");snow(45);me.seen=true;store(KEY,me)},5400);
+      setTimeout(()=>{$("#spin").classList.add("hidden");$("#result").classList.remove("hidden");snow(45);me.seen=true;me.seenName=winner;store(KEY,me)},5400);
     }
+    $("#copyWin").onclick=()=>copy(winner,$("#copyWin"));
+    if(seen){setY(targetIdx,false);$("#spin").classList.add("hidden");$("#result").classList.remove("hidden")}
     $("#spin").onclick=spin;
     $("#again").onclick=()=>{$("#spin").classList.remove("hidden");$("#spin").disabled=false;spin()};
   }
