@@ -223,9 +223,18 @@ async function decWith(jwk,x){
   return new TextDecoder().decode(await crypto.subtle.decrypt({name:"AES-GCM",iv:unb64(x.i)},key,unb64(x.c)));
 }
 
+/* Respaldo: primer nombre + últimos 4 dígitos del WhatsApp */
+function firstName(n){return String(n||"").toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g,"").replace(/[^a-zñ0-9 ]/g,"").trim().split(/\s+/)[0]||""}
+async function recKey(evId,first,last4){
+  const base=await crypto.subtle.importKey("raw",new TextEncoder().encode(firstName(first)+"|"+last4),"PBKDF2",false,["deriveKey"]);
+  return crypto.subtle.deriveKey({name:"PBKDF2",salt:new TextEncoder().encode("amigo-secreto|"+evId),iterations:150000,hash:"SHA-256"},base,{name:"AES-GCM",length:256},false,["encrypt","decrypt"]);
+}
+async function recEnc(key,text){const iv=crypto.getRandomValues(new Uint8Array(12));return{i:b64(iv),c:b64(await crypto.subtle.encrypt({name:"AES-GCM",iv},key,new TextEncoder().encode(text)))}}
+
 /* ===================== Canal compartido (ntfy.sh) ===================== */
 const topic=id=>"amigosecreto-"+id;
 async function publish(evId,obj){
+  try{pantryMirror(evId,obj)}catch(e){}
   for(let k=0;k<3;k++){
     try{const r=await fetch(RELAY+topic(evId),{method:"POST",body:JSON.stringify(obj)});if(r.ok)return true}catch(e){}
     await sleep(800*(k+1));
@@ -241,22 +250,171 @@ async function readFeed(evId){
 }
 /* convierte la lista de mensajes en el estado del evento */
 function reduce(msgs){
-  const st={ev:null,regs:{},dels:new Set(),draw:null,res:{},closed:false};
+  const st={ev:null,regs:{},dels:new Set(),draw:null,res:{},rec:{},closed:false,closedTs:0};
   msgs.sort((a,b)=>(a.ts||a._t*1000)-(b.ts||b._t*1000));
   for(const m of msgs){
     if(m.t==="ev")st.ev=m;
-    else if(m.t==="reg"&&m.id&&m.name&&m.pk){if(!st.regs[m.id])st.regs[m.id]={id:m.id,name:m.name,pk:m.pk,ph:m.ph,ts:m.ts||m._t*1000}}
-    else if(m.t==="close")st.closed=true;
-    else if(m.t==="open")st.closed=false;
+    else if(m.t==="reg"&&m.id&&m.name&&m.pk){if(!st.regs[m.id])st.regs[m.id]={id:m.id,name:m.name,pk:m.pk,ph:m.ph,pak:m.pak,ts:m.ts||m._t*1000};
+      else if(m.ph){st.regs[m.id].ph=m.ph;st.regs[m.id].pak=m.pak}}
+    else if(m.t==="gone")st.gone=true;
+    else if(m.t==="close"){st.closed=true;st.closedTs=m.ts||0}
+    else if(m.t==="open"){st.closed=false;st.closedTs=m.ts||0}
     else if(m.t==="del")st.dels.add(m.id);
     else if(m.t==="draw"){if(!st.draw||m.d>st.draw.d)st.draw={d:m.d,n:m.n,ids:m.ids||[]}}
     else if(m.t==="res")(st.res[m.d]=st.res[m.d]||{})[m.id]=m.x;
+    else if(m.t==="rec"&&m.x)(st.rec[m.d]=st.rec[m.d]||{})[m.k]=m.x;
   }
   st.dels.forEach(id=>delete st.regs[id]);
   return st;
 }
 function regList(st){return Object.values(st.regs).sort((a,b)=>a.ts-b.ts)}
 
+/* ===================== Guardado permanente (Pantry) ===================== */
+const PANTRY="https://getpantry.cloud/apiv1/pantry/a05dab26-d780-4dee-b814-ea69826a8cbd/basket/";
+let pLast=0,pChain=Promise.resolve();
+/* todas las llamadas van en fila y separadas, porque Pantry limita las consultas seguidas */
+function pCall(method,basket,body){
+  const job=pChain.then(async()=>{
+    for(let k=0;k<5;k++){
+      const wait=pLast+2600-Date.now();if(wait>0)await sleep(wait);pLast=Date.now();
+      try{
+        const o={method};if(body){o.headers={"Content-Type":"application/json"};o.body=JSON.stringify(body)}
+        const r=await fetch(PANTRY+basket,o);
+        if(r.ok){const t=await r.text();try{return JSON.parse(t)}catch(e){return{}}}
+        if(r.status===400){const t=await r.text();if(/does not exist/i.test(t))return{__missing:true};return null}
+      }catch(e){}
+      await sleep(3500*(k+1));
+    }
+    return null;
+  });
+  pChain=job.catch(()=>{});
+  return job;
+}
+function deepMerge(a,b){for(const k in b){if(b[k]&&typeof b[k]==="object"&&!Array.isArray(b[k])){if(!a[k]||typeof a[k]!=="object")a[k]={};deepMerge(a[k],b[k])}else a[k]=b[k]}return a}
+function skeleton(){return{ev:null,regs:{},dels:{},closed:false,closedTs:0,gone:false,draws:{},res:{},rec:{}}}
+function msgToPatch(m){
+  const ts=m.ts||Date.now();
+  switch(m.t){
+    case"ev":return{ev:{name:m.name,budget:m.budget,date:m.date,ak:m.ak,rk:m.rk||0,ts}};
+    case"reg":return{regs:{[m.id]:{id:m.id,name:m.name,pk:m.pk,ph:m.ph||null,pak:m.pak||null,ts}}};
+    case"del":return{dels:{[m.id]:ts}};
+    case"close":return{closed:true,closedTs:ts};
+    case"open":return{closed:false,closedTs:ts};
+    case"gone":return{gone:true};
+    case"draw":return{draws:{[m.d]:{n:m.n,ids:m.ids||[],ts}}};
+    case"res":return{res:{[m.d]:{[m.id]:m.x}}};
+    case"rec":return{rec:{[m.d]:{[m.k]:m.x}}};
+  }
+  return null;
+}
+/* junta los cambios de un evento y los manda en una sola llamada */
+const pPending={},pTimers={};
+function pantryMirror(evId,m){
+  const patch=msgToPatch(m);if(!patch)return;
+  const b="e-"+evId;
+  pPending[b]=deepMerge(pPending[b]||{},patch);
+  if(m.t==="ev")pPending[b].__create=true;
+  clearTimeout(pTimers[b]);pTimers[b]=setTimeout(()=>pantryFlush(b),400);
+}
+async function pantryFlush(b){
+  const patch=pPending[b];if(!patch)return;delete pPending[b];
+  const create=patch.__create;delete patch.__create;
+  let r=await pCall("PUT",b,patch);
+  if(r&&r.__missing)r=await pCall("POST",b,deepMerge(skeleton(),patch));
+  if(!r){pPending[b]=deepMerge(patch,pPending[b]||{});setTimeout(()=>pantryFlush(b),15000)}
+}
+window.addEventListener("pagehide",()=>{Object.keys(pPending).forEach(b=>{try{
+  fetch(PANTRY+b,{method:"PUT",headers:{"Content-Type":"application/json"},body:JSON.stringify(pPending[b]),keepalive:true})}catch(e){}})});
+/* suma lo guardado en Pantry al estado leído del canal rápido */
+function mergeBasket(st,b){
+  if(!b||b.__missing)return st;
+  if(!st.ev&&b.ev)st.ev=Object.assign({t:"ev"},b.ev);
+  if(b.ev&&st.ev&&b.ev.ts>(st.ev.ts||0))st.ev=Object.assign({t:"ev"},b.ev);
+  const curAk=(st.ev||b.ev||{}).ak;
+  Object.values(b.regs||{}).forEach(r=>{if(!r||!r.id||!r.pk)return;
+    if(!st.regs[r.id])st.regs[r.id]={id:r.id,name:r.name,pk:r.pk,ph:r.ph||undefined,pak:r.pak,ts:r.ts||0};
+    else if(r.ph&&r.pak&&r.pak===curAk&&st.regs[r.id].pak!==curAk){st.regs[r.id].ph=r.ph;st.regs[r.id].pak=r.pak}});
+  Object.keys(b.dels||{}).forEach(id=>st.dels.add(id));
+  st.dels.forEach(id=>delete st.regs[id]);
+  if((b.closedTs||0)>(st.closedTs||0)){st.closed=!!b.closed;st.closedTs=b.closedTs}
+  else if(!st.closedTs&&b.closed)st.closed=true;
+  if(b.gone)st.gone=true;
+  Object.entries(b.draws||{}).forEach(([d,x])=>{d=+d;if(!st.draw||d>st.draw.d)st.draw={d,n:x.n,ids:x.ids||[]}});
+  Object.entries(b.res||{}).forEach(([d,m])=>{st.res[d]=Object.assign({},m,st.res[d]||{})});
+  Object.entries(b.rec||{}).forEach(([d,m])=>{st.rec[d]=Object.assign({},m,st.rec[d]||{})});
+  return st;
+}
+const pCache={};
+/* lee el evento: canal rápido siempre; Pantry al abrir y luego cada cierto tiempo */
+async function loadState(evId,every){
+  let msgs=null;try{msgs=await readFeed(evId)}catch(e){}
+  const c=pCache[evId]||(pCache[evId]={t:0,b:null});
+  if(!c.t||Date.now()-c.t>(every||60000)){c.t=Date.now();const b=await Promise.race([pCall("GET","e-"+evId),sleep(7000).then(()=>null)]);if(b)c.b=b}
+  if(!msgs&&!c.b)throw new Error("sin conexión");
+  const st=mergeBasket(reduce(msgs||[]),c.b);
+  st.inPantry=!!(c.b&&!c.b.__missing);
+  return st;
+}
+/* copia completa de un evento (desde el aparato del organizador) */
+function fullPatch(ev){
+  const p={ev:{name:ev.name,budget:ev.budget,date:ev.date,ak:ev.ak,ts:ev.created},regs:{},dels:{},closed:!!ev.closed,closedTs:ev.closedTs||ev.created||0};
+  Object.values(ev.regs||{}).forEach(r=>{p.regs[r.id]={id:r.id,name:r.name,pk:r.pk,ph:r.ph||null,ts:r.ts}});
+  (ev.dels||[]).forEach(d=>p.dels[d]=1);
+  if(ev.draw){const d=ev.draw.d;p.draws={[d]:{n:Object.keys(ev.draw.map).length,ids:Object.keys(ev.draw.map),ts:ev.draw.ts}};
+    p.res={[d]:ev.draw.enc};if(ev.draw.rec)p.rec={[d]:ev.draw.rec}}
+  return p;
+}
+
+/* ===================== Bóveda del organizador (entrar desde cualquier aparato) ===================== */
+let vaultKey=null,vaultPushT=null,vaultLastJSON="";
+async function getVaultKey(){
+  if(vaultKey)return vaultKey;
+  let pin=null;try{pin=sessionStorage.getItem("as-pin")}catch(e){}
+  if(!pin)return null;
+  const base=await crypto.subtle.importKey("raw",new TextEncoder().encode(pin),"PBKDF2",false,["deriveKey"]);
+  vaultKey=await crypto.subtle.deriveKey({name:"PBKDF2",salt:new TextEncoder().encode("amigo-secreto-org|a05dab26"),iterations:250000,hash:"SHA-256"},base,{name:"AES-GCM",length:256},false,["encrypt","decrypt"]);
+  return vaultKey;
+}
+function mergeEvents(local,remote,deleted){
+  const out=Object.assign({},local);
+  Object.values(remote||{}).forEach(r=>{
+    const l=out[r.id];
+    if(!l){out[r.id]=r;return}
+    const base=(r.upd||0)>(l.upd||0)?Object.assign({},r):Object.assign({},l);
+    base.regs=Object.assign({},r.regs||{},l.regs||{});
+    Object.keys(base.regs).forEach(k=>{const a=(r.regs||{})[k],b=(l.regs||{})[k];if(a&&b&&!b.phone&&a.phone)base.regs[k]=a});
+    base.dels=[...new Set([...(r.dels||[]),...(l.dels||[])])];
+    base.dels.forEach(d=>delete base.regs[d]);
+    if(!base.draw)base.draw=(r.draw&&l.draw)?((r.draw.d>l.draw.d)?r.draw:l.draw):(r.draw||l.draw||null);
+    out[r.id]=base;
+  });
+  Object.keys(deleted||{}).forEach(id=>delete out[id]);
+  return out;
+}
+async function pullVault(){
+  const key=await getVaultKey();if(!key)return false;
+  const b=await pCall("GET","org");
+  if(!b||b.__missing||!b.c)return !!b;
+  try{
+    const data=JSON.parse(new TextDecoder().decode(await crypto.subtle.decrypt({name:"AES-GCM",iv:unb64(b.i)},key,unb64(b.c))));
+    const delLocal=store("as-admin-deleted")||{};
+    const deleted=Object.assign({},data.deleted||{},delLocal);
+    store("as-admin-deleted",deleted);
+    store("as-admin-events",mergeEvents(adminEvents(),data.events,deleted));
+    return true;
+  }catch(e){return false}
+}
+function pushVaultSoon(){clearTimeout(vaultPushT);vaultPushT=setTimeout(pushVault,2500)}
+async function pushVault(){
+  const key=await getVaultKey();if(!key)return;
+  await pullVault();
+  const data={events:adminEvents(),deleted:store("as-admin-deleted")||{}};
+  const json=JSON.stringify(data);if(json===vaultLastJSON)return;
+  const iv=crypto.getRandomValues(new Uint8Array(12));
+  const c=await crypto.subtle.encrypt({name:"AES-GCM",iv},key,new TextEncoder().encode(json));
+  const r=await pCall("POST","org",{v:1,i:b64(iv),c:b64(c),ts:Date.now()});
+  if(r)vaultLastJSON=json;else pushVaultSoon();
+}
 
 /* ===================== Código numérico estilo iPhone ===================== */
 const PIN_HASH="7a6be5182f3ae3e6bccf1605daa750b10da7b48a5fcc1237afbfaa84a181b0cb";
@@ -277,7 +435,8 @@ function requirePin(ok,cancel){
     if(code.length>=4)return;code+=k;paint();
     if(code.length===4){
       const h=await sha256("amigo-secreto-pin|"+code);
-      if(h===PIN_HASH){try{sessionStorage.setItem("as-unlock",PIN_HASH)}catch(e){}setTimeout(()=>{pad.remove();ok()},180)}
+      if(h===PIN_HASH){try{sessionStorage.setItem("as-unlock",PIN_HASH);sessionStorage.setItem("as-pin",code)}catch(e){}
+        pad.querySelector(".pin-title").textContent="Abriendo…";await Promise.race([pullVault(),sleep(9000)]);pushVaultSoon();setTimeout(()=>{pad.remove();ok()},120)}
       else{const box=pad.querySelector(".pin-dots");box.classList.add("shake");setTimeout(()=>{box.classList.remove("shake");code="";paint()},450)}
     }
   }
@@ -322,7 +481,8 @@ function adminLogin(nextId){
   };
 }
 function adminEvents(){return store("as-admin-events")||{}}
-function saveAdminEvent(e){const all=adminEvents();all[e.id]=e;store("as-admin-events",all)}
+function saveAdminEvent(e){const all=adminEvents();const strip=x=>JSON.stringify(Object.assign({},x||{},{upd:0}));
+  if(strip(all[e.id])!==strip(e)){e.upd=Date.now();all[e.id]=e;store("as-admin-events",all);pushVaultSoon()}else{all[e.id]=e;store("as-admin-events",all)}}
 function adminHome(){
   const evs=Object.values(adminEvents()).sort((a,b)=>b.created-a.created);
   app.innerHTML=`
@@ -345,9 +505,51 @@ function adminHome(){
   </div>
   ${`<div class="card hidden reg-sheet" id="listCard" style="margin-top:16px"><h2>📋 Mis eventos <button type="button" class="x" id="closeList" style="margin-left:auto" aria-label="Cerrar">✕</button></h2><ul class="people">${evs.map((e,i)=>`
     <li><div class="avatar" style="background:${color(i)}">🎁</div><div class="grow"><div class="name">${esc(e.name)}</div>
-    <div class="hint" style="margin:0">${e.draw?'<span class="badge">Sorteo hecho</span>':'<span class="badge wait">Inscripciones abiertas</span>'}</div></div>
-    <a class="btn-ghost btn-sm" style="border-radius:10px;text-decoration:none;color:var(--ink)" href="#admin-${e.id}">Abrir</a></li>`).join("")}</ul>${evs.length?"":`<p class="hint" style="margin:0">Este celular o computador no tiene eventos todavía.<br>Los eventos se guardan en el aparato donde los creaste: ábrelos desde ahí.</p>`}</div>`}`;
-  const lb=$("#listBtn");if(lb)lb.onclick=()=>requirePin(()=>{$("#openNew").classList.add("hidden");$("#homeSpace").classList.add("hidden");$("#listCard").classList.remove("hidden")});
+    <div class="hint" style="margin:2px 0 0">👥 <b data-count="${e.id}">${Object.keys(e.regs||{}).length}</b> inscritos ·
+      ${e.draw?'<span class="badge">Sorteo hecho</span>':e.closed?'<span class="badge wait">Inscripciones cerradas</span>':'<span class="badge wait">Inscripciones abiertas</span>'}</div></div>
+    <div class="actions" style="flex-wrap:nowrap;gap:6px;flex:none"><a class="btn-ghost btn-sm" style="border-radius:10px;text-decoration:none;color:var(--ink)" href="#admin-${e.id}">Abrir</a>
+    <button class="btn-ghost btn-sm" data-delev="${e.id}" style="color:var(--red);padding:7px 9px" aria-label="Eliminar evento">🗑</button></div></li>`).join("")}</ul>${evs.length?"":`<p class="hint" style="margin:0">Todavía no tienes eventos. Crea uno con el botón dorado.</p>`}
+    <button class="btn-ghost" id="rcvBtn" style="margin-top:12px;width:100%">🛟 Recuperar un evento con su link</button>
+    <form id="rcvF" class="hidden" style="margin-top:12px">
+      <div class="field"><label for="rvL">Link de inscripción del evento</label><input id="rvL" required placeholder="https://zasp13.github.io/amigo-secreto/#e-…"></div>
+      <div class="field"><label for="rvN">Nombre del evento</label><input id="rvN" required placeholder="Ej: Administración y Finanzas"></div>
+      <div class="grid2"><div class="field"><label for="rvB">Monto</label><input id="rvB" placeholder="Ej: $20.000"></div>
+      <div class="field"><label for="rvD">Fecha</label><input id="rvD" type="date"></div></div>
+      <button class="btn btn-big">Recuperar evento</button><div id="rvM"></div>
+    </form></div>`}`;
+  const lb=$("#listBtn");if(lb)lb.onclick=()=>requirePin(async()=>{
+    $("#openNew").classList.add("hidden");$("#homeSpace").classList.add("hidden");$("#listCard").classList.remove("hidden");
+    const shown=JSON.stringify(evs.map(e=>e.id).sort());
+    if(!window.__pulled){window.__pulled=true;await pullVault()}
+    if(JSON.stringify(Object.keys(adminEvents()).sort())!==shown){adminHome();$("#listBtn").click()}});
+  app.querySelectorAll("[data-delev]").forEach(b=>b.onclick=()=>{
+    const e=adminEvents()[b.dataset.delev];if(!e)return;
+    overlay(`<p style="font-size:1.05rem;margin-top:0">¿Eliminar el evento <b>${esc(e.name)}</b>?</p><p class="hint">Se borra de tu lista y los invitados verán que el evento fue eliminado. No se puede deshacer.</p>
+      <div class="row" style="margin-top:12px"><button class="btn-ghost" id="dN">Cancelar</button><button class="btn" id="dY">Eliminar</button></div>`);
+    $("#dN").onclick=closeOverlay;
+    $("#dY").onclick=async()=>{closeOverlay();const all=adminEvents();delete all[e.id];store("as-admin-events",all);
+      const del=store("as-admin-deleted")||{};del[e.id]=Date.now();store("as-admin-deleted",del);pushVaultSoon();
+      publish(e.id,{t:"gone",ts:Date.now()});adminHome();$("#listBtn").click()};
+  });
+  // actualizar la cantidad de inscritos desde internet
+  evs.forEach(async e=>{try{const st=await loadState(e.id,120000);const n=regList(st).length;const el=app.querySelector(`[data-count="${e.id}"]`);
+    if(el&&n>(+el.textContent||0))el.textContent=n}catch(err){}});
+  const rcb=$("#rcvBtn");if(rcb)rcb.onclick=()=>{rcb.classList.add("hidden");$("#rcvF").classList.remove("hidden");$("#rvL").focus()};
+  const rcf=$("#rcvF");if(rcf)rcf.onsubmit=async e=>{
+    e.preventDefault();
+    const m=($("#rvL").value.match(/#e-([a-z0-9]{8,})/)||[])[1];
+    if(!m){$("#rvM").innerHTML='<div class="msg err">Pega el link completo, el que termina en #e-…</div>';return}
+    if(adminEvents()[m]){location.hash="admin-"+m;return}
+    const btn=e.target.querySelector("button");btn.disabled=true;btn.textContent="Recuperando…";
+    let st=null;try{st=await loadState(m,0)}catch(err){}
+    const ak=await newKeys();
+    const ev={id:m,name:$("#rvN").value.trim(),budget:$("#rvB").value.trim(),date:$("#rvD").value,created:Date.now(),regs:{},dels:[],excl:[],draw:null,closed:false,ak:ak.pub,ajwk:ak.jwk,recovered:true};
+    if(st){regList(st).forEach(r=>{ev.regs[r.id]={id:r.id,name:r.name,pk:r.pk,ph:r.ph,pak:r.pak,phone:"",ts:r.ts}});ev.dels=[...st.dels];
+      if(st.draw){btn.disabled=false;btn.textContent="Recuperar evento";$("#rvM").innerHTML='<div class="msg err">Este evento ya tiene sorteo hecho; solo se puede recuperar antes del sorteo.</div>';return}}
+    const ok=await publish(m,{t:"ev",name:ev.name,budget:ev.budget,date:ev.date,ak:ev.ak,rk:1,ts:Date.now()});
+    if(!ok){btn.disabled=false;btn.textContent="Recuperar evento";$("#rvM").innerHTML='<div class="msg err">No hay conexión. Intenta de nuevo.</div>';return}
+    saveAdminEvent(ev);location.hash="admin-"+m;
+  };
   const cl=$("#closeList");if(cl)cl.onclick=()=>{$("#listCard").classList.add("hidden");$("#openNew").classList.remove("hidden");$("#homeSpace").classList.remove("hidden")};
   if(location.hash==="#eventos"&&lb)lb.click();
   $("#newBtn").onclick=()=>requirePin(()=>{$("#openNew").classList.add("hidden");$("#homeSpace").classList.add("hidden");$("#newCard").classList.remove("hidden");$("#evName").focus()});
@@ -380,11 +582,13 @@ function drawnText(ev){
 async function adminEvent(id){
   let ev=adminEvents()[id];
   if(!ev){
-    app.innerHTML='<div class="card center" style="margin-top:20vh"><div style="font-size:2.2rem">🔒</div><p><b>Este evento solo se puede administrar desde el celular donde se creó.</b></p><a href="#">Volver</a></div>';return;
+    app.innerHTML='<p class="center dots" style="margin-top:30vh;color:#fff">Buscando tu evento</p>';
+    await pullVault();ev=adminEvents()[id];
+    if(!ev){app.innerHTML='<div class="card center" style="margin-top:20vh"><p><b>No encontré este evento.</b></p><p class="hint">Puede que haya sido eliminado.</p><a href="#eventos">Volver a mis eventos</a></div>';return}
   }
   let st=null,repaired=false,msg="";
   async function sync(){
-    try{st=reduce(await readFeed(id))}catch(e){st=null;render('<div class="msg err">Sin conexión. Reintentando…</div>');return}
+    try{st=await loadState(id,45000)}catch(e){st=null;render('<div class="msg err">Sin conexión. Reintentando…</div>');return}
     ev=adminEvents()[id];
     // juntar inscripciones nuevas en la copia maestra de este aparato
     for(const r of regList(st)){
@@ -392,7 +596,9 @@ async function adminEvent(id){
       const old=ev.regs[r.id];
       let phone=old&&old.phone||"";
       if(!phone&&r.ph&&ev.ajwk){try{phone=await decWith(ev.ajwk,r.ph)}catch(e){}}
-      ev.regs[r.id]={id:r.id,name:r.name,pk:r.pk,ph:r.ph,phone,ts:r.ts};
+      if(old&&old.ph!==r.ph&&!old.phone)phone="";
+      if(!phone&&r.ph&&ev.ajwk){try{phone=await decWith(ev.ajwk,r.ph)}catch(e){}}
+      ev.regs[r.id]={id:r.id,name:r.name,pk:r.pk,ph:r.ph,pak:r.pak,phone,ts:r.ts};
     }
     saveAdminEvent(ev);
     // los mensajes del canal duran ~12 h: se vuelven a publicar los que falten
@@ -403,8 +609,9 @@ async function adminEvent(id){
     render();
   }
   async function repair(){
+    pCall("PUT","e-"+id,fullPatch(ev)).then(r=>{if(r&&r.__missing)pCall("POST","e-"+id,deepMerge(skeleton(),fullPatch(ev)))});
     const jobs=[];
-    if(!st.ev)jobs.push({t:"ev",name:ev.name,budget:ev.budget,date:ev.date,ak:ev.ak,ts:ev.created});
+    if(!st.ev)jobs.push({t:"ev",name:ev.name,budget:ev.budget,date:ev.date,ak:ev.ak,rk:ev.recovered?1:0,ts:ev.created});
     Object.values(ev.regs).forEach(r=>{if(!st.regs[r.id])jobs.push({t:"reg",id:r.id,name:r.name,pk:r.pk,ph:r.ph,ts:r.ts})});
     if(ev.closed&&!st.closed)jobs.push({t:"close",ts:Date.now()});
     ev.dels.forEach(d=>{if(!st.dels.has(d))jobs.push({t:"del",id:d,ts:Date.now()})});
@@ -412,6 +619,8 @@ async function adminEvent(id){
       if(!st.draw||st.draw.d<ev.draw.d)jobs.push({t:"draw",d:ev.draw.d,n:Object.keys(ev.draw.map).length,ids:Object.keys(ev.draw.map),ts:ev.draw.ts});
       const have=st.res[ev.draw.d]||{};
       Object.entries(ev.draw.enc).forEach(([pid,x])=>{if(!have[pid])jobs.push({t:"res",d:ev.draw.d,id:pid,x,ts:ev.draw.ts})});
+      const haveRec=st.rec[ev.draw.d]||{};
+      Object.entries(ev.draw.rec||{}).forEach(([k,x])=>{if(!haveRec[k])jobs.push({t:"rec",d:ev.draw.d,k,x,ts:ev.draw.ts})});
     }
     for(const j of jobs){await publish(id,j);await sleep(250)}
   }
@@ -514,9 +723,13 @@ async function adminEvent(id){
     const map={},enc={};
     for(let i=0;i<n;i++){map[R[i].id]=R[res[i]].id;enc[R[i].id]=await encFor(R[i].pk,JSON.stringify({r:R[res[i]].name}))}
     const d=Date.now(),ts=Date.now();
-    ev.draw={d,map,enc,ts};saveAdminEvent(ev);
+    const rec={};
+    for(let i=0;i<n;i++){const ph=(ev.regs[R[i].id].phone||"").replace(/\D/g,"");if(ph.length<4)continue;
+      const key=await recKey(id,R[i].name,ph.slice(-4));rec[rid(8)]=await recEnc(key,JSON.stringify({r:R[res[i]].name,n:R[i].name}))}
+    ev.draw={d,map,enc,rec,ts};saveAdminEvent(ev);
     await publish(id,{t:"draw",d,n,ids:Object.keys(map),ts});
     for(const pid of Object.keys(enc)){await publish(id,{t:"res",d,id:pid,x:enc[pid],ts});await sleep(200)}
+    for(const k of Object.keys(rec)){await publish(id,{t:"rec",d,k,x:rec[k],ts});await sleep(150)}
     msg="";snow(30);render();
   }
   render('<p class="hint dots">Actualizando</p>');
@@ -531,10 +744,10 @@ async function participantView(id){
   let st=null,reRegistered=false;
   app.innerHTML='<p class="center dots" style="margin-top:30vh;color:#fff">Cargando</p>';
   async function sync(){
-    try{st=reduce(await readFeed(id))}catch(e){if(!st){app.innerHTML='<div class="card center" style="margin-top:20vh"><p>No hay conexión. Revisa tu internet y recarga.</p></div>'}return}
+    try{st=await loadState(id,60000)}catch(e){if(!st){app.innerHTML='<div class="card center" style="margin-top:20vh"><p>No hay conexión. Revisa tu internet y recarga.</p></div>'}return}
     if(me&&st.dels.has(me.id)){store(KEY,null);me=null}
     // si mi inscripción ya no aparece (el canal guarda ~12 h) la vuelvo a mandar
-    if(me&&!st.regs[me.id]&&!st.draw&&!reRegistered){reRegistered=true;await publish(id,{t:"reg",id:me.id,name:me.name,pk:me.pub,ph:me.ph,ts:me.ts});st.regs[me.id]={id:me.id,name:me.name,pk:me.pub,ts:me.ts}}
+    if(me&&!st.regs[me.id]&&!st.draw&&!reRegistered){reRegistered=true;await publish(id,{t:"reg",id:me.id,name:me.name,pk:me.pub,ph:me.ph,pak:me.pak,ts:me.ts});st.regs[me.id]={id:me.id,name:me.name,pk:me.pub,ts:me.ts}}
     if(!me&&$("#rf")&&!st.draw)return;
     render();
   }
@@ -551,11 +764,13 @@ async function participantView(id){
     try{const r=JSON.parse(await decWith(me.jwk,x)).r;me.result={d:st.draw.d,name:r};store(KEY,me);return r}catch(e){return null}
   }
   async function render(){
+    if(st.gone){app.innerHTML='<div class="card center" style="margin-top:20vh"><div style="font-size:2.2rem">🗑</div><p><b>Este evento fue eliminado por quien organiza.</b></p></div>';return}
     if(!st.ev&&!me){app.innerHTML='<div class="card center" style="margin-top:20vh"><p>Este link de sorteo no existe o ya expiró.</p><p class="hint">Pídele el link de nuevo a quien organiza.</p></div>';return}
     const R=regList(st);
     // 1) No inscrito
     if(!me){
-      if(st.draw||st.closed){app.innerHTML=header()+'<div class="card center"><div style="font-size:2.2rem">🔒</div><p><b>Las inscripciones ya se cerraron.</b></p><p class="hint">Si te inscribiste desde otro celular, abre el link en ese celular. Si no alcanzaste a inscribirte, avísale a quien organiza.</p></div>';return}
+      if(st.draw||st.closed){app.innerHTML=header()+'<div class="card center"><div style="font-size:2.2rem">🔒</div><p><b>Las inscripciones ya se cerraron.</b></p>'+(st.draw?'<p class="hint">¿Te inscribiste desde otro celular o no ves tu resultado? Recupéralo con tu nombre y los últimos 4 dígitos de tu WhatsApp.</p><button class="btn-ghost" id="recBtn" style="margin-top:12px;width:100%">🔑 ¿No ves tu resultado? Recupéralo aquí</button>':'<p class="hint">Si no alcanzaste a inscribirte, avísale a quien organiza.</p>')+'</div>';
+        const rb=$("#recBtn");if(rb)rb.onclick=recoverForm;return}
       app.innerHTML=header()+`
       <div class="photo-space"></div>
       <div class="center" id="openReg"><button class="btn btn-big" id="openBtn" style="max-width:360px;box-shadow:0 8px 24px rgba(0,0,0,.35)">✍️ Inscribirme</button>
@@ -577,8 +792,8 @@ async function participantView(id){
         const phone=$("#rp").value.trim();
         if(phone.replace(/\D/g,"").length<8){$("#rm").innerHTML='<div class="msg err">Revisa tu número de WhatsApp.</div>';return}
         const k=await newKeys();const reg={id:rid(10),name,pub:k.pub,jwk:k.jwk,ts:Date.now()};
-        if(st.ev&&st.ev.ak){try{reg.ph=await encFor(st.ev.ak,phone)}catch(e){}}
-        if(!await publish(id,{t:"reg",id:reg.id,name,pk:reg.pub,ph:reg.ph,ts:reg.ts})){btn.disabled=false;btn.textContent="Inscribirme en el sorteo";$("#rm").innerHTML='<div class="msg err">No hay conexión. Intenta de nuevo.</div>';return}
+        if(st.ev&&st.ev.ak){try{reg.ph=await encFor(st.ev.ak,phone);reg.pak=st.ev.ak}catch(e){}}
+        if(!await publish(id,{t:"reg",id:reg.id,name,pk:reg.pub,ph:reg.ph,pak:reg.pak,ts:reg.ts})){btn.disabled=false;btn.textContent="Inscribirme en el sorteo";$("#rm").innerHTML='<div class="msg err">No hay conexión. Intenta de nuevo.</div>';return}
         me=reg;store(KEY,me);st.regs[me.id]={id:me.id,name,pk:me.pub,ts:me.ts};snow(20);render();
       };
       return;
@@ -591,13 +806,26 @@ async function participantView(id){
       <div class="card center">
         <div style="font-size:2.4rem">✅</div>
         <h2 class="serif" style="display:block;margin:4px 0">¡Listo, ${esc(me.name)}! Estás inscrito</h2>
-        ${st.draw&&!inDraw?'<p>El sorteo se hizo sin tu inscripción. Avísale a quien organiza.</p>'
+        ${st.draw?'<p><b>¡El sorteo ya está hecho!</b></p><p class="hint">No encontramos tu resultado en este celular. Recupéralo con tu primer nombre y los últimos 4 dígitos de tu WhatsApp.</p><button class="btn-ghost" id="recBtn" style="margin-top:12px;width:100%">🔑 ¿No ves tu resultado? Recupéralo aquí</button>'
           :st.closed?'<p style="margin:6px 0 0">🔒 Las inscripciones se cerraron.</p><p class="dots hint">Esperando que se haga el sorteo</p>'
           :'<p class="dots" style="margin:6px 0 0">Esperando que se inscriban todos y se haga el sorteo</p><p class="hint">Deja esta página abierta o vuelve a este mismo link más tarde. Cuando el sorteo esté listo, aquí aparecerá la tómbola.</p>'}
       </div>
+      ${!st.draw&&st.ev&&st.ev.rk&&st.ev.ak&&(st.regs[me.id]||{}).pak!==st.ev.ak?`<div class="card" id="cfCard"><h2>✅ Confirma tu inscripción</h2>
+        <p class="hint" style="margin-top:0">Escribe tu WhatsApp para confirmar tu participación y recibir el aviso cuando se haga el sorteo.</p>
+        <form id="cfF"><input id="cfP" type="tel" required placeholder="Ej: +56 9 1234 5678" autocomplete="tel"><button class="btn btn-big" style="margin-top:10px">Confirmar inscripción</button></form><div id="cfM"></div></div>`:""}
       <div class="card"><h2>Inscritos <span class="badge" style="margin-left:auto">${R.length}</span></h2>
         <ul class="people">${R.map((r,i)=>`<li><div class="avatar" style="background:${color(i)}">${initial(r.name)}</div><div class="grow name">${esc(r.name)}${r.id===me.id?' <span class="hint">(tú)</span>':""}</div></li>`).join("")}</ul>
       </div>`;
+      const rb=$("#recBtn");if(rb)rb.onclick=recoverForm;
+      const cf=$("#cfF");if(cf)cf.onsubmit=async e=>{
+        e.preventDefault();const phone=$("#cfP").value.trim();
+        if(phone.replace(/\D/g,"").length<8){$("#cfM").innerHTML='<div class="msg err">Revisa tu número de WhatsApp.</div>';return}
+        const btn=e.target.querySelector("button");btn.disabled=true;btn.textContent="Enviando…";
+        me.ph=await encFor(st.ev.ak,phone);me.pak=st.ev.ak;store(KEY,me);
+        await publish(id,{t:"reg",id:me.id,name:me.name,pk:me.pub,ph:me.ph,pak:me.pak,ts:me.ts});
+        st.regs[me.id]=Object.assign(st.regs[me.id]||{id:me.id,name:me.name,pk:me.pub,ts:me.ts},{ph:me.ph,pak:me.pak});
+        snow(15);render();
+      };
       return;
     }
     // 3) Sorteo listo: tómbola
@@ -605,6 +833,30 @@ async function participantView(id){
     const others=R.filter(r=>r.id!==me.id).map(r=>r.name);
     if(!others.includes(res))others.push(res);
     tombola(header(),res,others,!!me.seen);
+  }
+  function recoverForm(){
+    const R=regList(st);
+    app.innerHTML=header()+`<div class="card reg-sheet"><h2>🔑 Recuperar mi resultado</h2>
+      <form id="recF"><label for="rcN">Tu primer nombre (como te inscribiste)</label><input id="rcN" required placeholder="Ej: Ana" autocomplete="given-name">
+      <label for="rcD" style="margin-top:10px">Últimos 4 dígitos de tu WhatsApp</label>
+      <input id="rcD" required inputmode="numeric" maxlength="4" pattern="[0-9]{4}" placeholder="Ej: 5678" style="letter-spacing:.4em;font-size:1.3rem;text-align:center">
+      <button class="btn btn-big" style="margin-top:12px">Ver mi amigo secreto</button></form><div id="rcM"></div>
+      <button class="btn-ghost btn-sm" id="rcBack" style="margin-top:10px">← Volver</button></div>`;
+    $("#rcBack").onclick=render;
+    $("#recF").onsubmit=async e=>{
+      e.preventDefault();const btn=e.target.querySelector("button");
+      const nm=$("#rcN").value,dg=$("#rcD").value.replace(/\D/g,"");
+      if(dg.length!==4){$("#rcM").innerHTML='<div class="msg err">Escribe los últimos 4 números de tu WhatsApp.</div>';return}
+      btn.disabled=true;btn.textContent="Buscando…";
+      const key=await recKey(id,nm,dg);let found=null;
+      for(const x of Object.values(st.rec[st.draw.d]||{})){try{found=JSON.parse(new TextDecoder().decode(await crypto.subtle.decrypt({name:"AES-GCM",iv:unb64(x.i)},key,unb64(x.c))));break}catch(err){}}
+      btn.disabled=false;btn.textContent="Ver mi amigo secreto";
+      if(!found){$("#rcM").innerHTML=Object.keys(st.rec[st.draw.d]||{}).length?'<div class="msg err">No coincide. Revisa tu primer nombre y los 4 dígitos. Si sigue sin funcionar, pídele tu resultado a quien organiza.</div>'
+        :'<div class="msg info">Los resultados se están actualizando. Pídele a quien organiza que abra su panel y vuelve a intentar en unos minutos.</div>';return}
+      me=me||{id:"rec-"+rid(6),name:found.n};me.result={d:st.draw.d,name:found.r};store(KEY,me);
+      const others=R.filter(r=>r.name!==found.n).map(r=>r.name);if(!others.includes(found.r))others.push(found.r);
+      clearInterval(pollTimer);tombola(header(),found.r,others,false);
+    };
   }
   function tombola(head,winner,names,seen){
     app.innerHTML=head+`
